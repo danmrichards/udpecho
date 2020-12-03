@@ -6,19 +6,19 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof"
-	"runtime"
 	"sync"
 
-	"github.com/danmrichards/udpecho/internal/utils"
+	"github.com/mailru/easygo/netpoll"
 )
 
 // EchoServer is a UDP server that echos packets back to the sender.
 type EchoServer struct {
-	c       net.PacketConn
-	workers int
-	done    chan struct{}
-	wg      sync.WaitGroup
-	ps      *http.Server
+	c    *net.UDPConn
+	p    netpoll.Poller
+	d    *netpoll.Desc
+	done chan struct{}
+	ps   *http.Server
+	wg   sync.WaitGroup
 }
 
 // Option is a functional option that modifies the echo server.
@@ -38,29 +38,38 @@ func NewEchoServer(addr string, opts ...Option) (es *EchoServer, err error) {
 	// Configure to create as many workers as we have available threads. Leaving
 	// 1 free for the main thread. Attempt to parallelise as much as we can.
 	es = &EchoServer{
-		workers: runtime.GOMAXPROCS(0) - 1,
-		done:    make(chan struct{}),
+		done: make(chan struct{}),
 	}
 
 	for _, o := range opts {
 		o(es)
 	}
 
-	// Free up a thread for profiling if enabled.
-	if es.ps != nil {
-		es.workers--
+	es.p, err = netpoll.New(nil)
+	if err != nil {
+		return nil, fmt.Errorf("netpoll: %w", err)
 	}
 
-	es.c, err = net.ListenPacket("udp", addr)
+	ua, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
-		return nil, fmt.Errorf("listen: %w", err)
+		return nil, fmt.Errorf("resolve udp address: %w", err)
+	}
+
+	es.c, err = net.ListenUDP("udp", ua)
+	if err != nil {
+		return nil, fmt.Errorf("listen udp: %w", err)
+	}
+
+	es.d, err = netpoll.HandleRead(es.c)
+	if err != nil {
+		return nil, fmt.Errorf("handle read: %w", err)
 	}
 
 	return es, nil
 }
 
 // Server starts the echo server.
-func (e *EchoServer) Serve() {
+func (e *EchoServer) Serve() error {
 	// Start the profiling server if required.
 	if e.ps != nil {
 		e.wg.Add(1)
@@ -70,10 +79,8 @@ func (e *EchoServer) Serve() {
 		}()
 	}
 
-	for i := 0; i < e.workers; i++ {
-		e.wg.Add(1)
-		go e.recv()
-	}
+	buf := make([]byte, 1024)
+	return e.p.Start(e.d, e.recv(buf))
 }
 
 // Stop stops the echo server.
@@ -95,24 +102,36 @@ func (e *EchoServer) Stop() error {
 	return nil
 }
 
-func (e *EchoServer) recv() {
-	defer e.wg.Done()
-
-	buf := make([]byte, 1024)
-	for !utils.IsDone(e.done) {
-		n, s, err := e.c.ReadFrom(buf)
-		if err != nil {
-			if utils.IsDone(e.done) {
-				// Ignore the error if we've closed the connection.
-				return
-			}
-
-			log.Println("read UDP:", err)
+func (e *EchoServer) recv(buf []byte) netpoll.CallbackFn {
+	return func(evt netpoll.Event) {
+		if evt&netpoll.EventReadHup != 0 {
+			e.p.Stop(e.d)
 			return
 		}
 
-		if _, err = e.c.WriteTo(buf[:n], s); err != nil {
-			log.Println("write UDP:", err)
+		dd, err := netpoll.HandleRead(e.c)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+
+		if err = e.p.Start(dd, func(ev netpoll.Event) {
+			if ev&netpoll.EventReadHup != 0 {
+				e.p.Stop(dd)
+				return
+			}
+
+			n, s, err := e.c.ReadFromUDP(buf)
+			if err != nil {
+				log.Println(err)
+				return
+			}
+
+			if _, err = e.c.WriteToUDP(buf[:n], s); err != nil {
+				log.Println(err)
+			}
+		}); err != nil {
+			log.Println(err)
 		}
 	}
 }
