@@ -34,6 +34,13 @@ func NewServer(pc net.PacketConn, p *epoll.Poller) (*Server, error) {
 	}, nil
 }
 
+// Close closes the server and all open sessions.
+func (s *Server) Close() {
+	for sfd := range s.sessions {
+		syscall.Close(sfd)
+	}
+}
+
 // HandleEvent is an epoll.EventFn that handles events for echoing packets.
 //
 // The handler will determine if the event is for a client that has an existing
@@ -55,6 +62,7 @@ func (s *Server) HandleEvent(fd int) error {
 
 		// Start epoll watching new socket.
 		if err = s.poller.Add(cfd); err != nil {
+			syscall.Close(cfd)
 			return err
 		}
 

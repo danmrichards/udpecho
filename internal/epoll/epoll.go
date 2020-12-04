@@ -47,7 +47,12 @@ func (p *Poller) HandlePacketConn(conn net.PacketConn, ef EventFn) (err error) {
 		return err
 	}
 
-	return p.Add(fd)
+	if err = p.Add(fd); err != nil {
+		syscall.Close(fd)
+		return err
+	}
+
+	return nil
 }
 
 // Close closes the poller.
@@ -77,7 +82,6 @@ func (p *Poller) Wait() error {
 
 			if evt.Events&syscall.EPOLLIN == 0 {
 				fmt.Println("unhandled", evt.Events)
-
 				continue
 			}
 
