@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"math/rand"
@@ -10,10 +11,17 @@ import (
 	"time"
 )
 
-var conns = 100
-
+var (
+	host, port string
+	conns      int
+)
 func main() {
-	ra, err := net.ResolveUDPAddr("udp", ":8888")
+	flag.StringVar(&host, "host", "127.0.0.1", "host of the relay server")
+	flag.StringVar(&port, "port", "8888", "port of the relay server")
+	flag.IntVar(&conns, "conns", 10, "number of connections to create")
+	flag.Parse()
+
+	ra, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, port))
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"net"
 	"net/http"
@@ -12,10 +13,22 @@ import (
 	"github.com/danmrichards/udpecho/internal/epoll"
 )
 
-var addr = ":8888"
+var port, profilePort string
 
 func main() {
-	go func() { log.Println(http.ListenAndServe(":6060", nil)) }()
+	flag.StringVar(&port, "port", "8888", "port to bind the server on")
+	flag.StringVar(&profilePort, "profile", "", "port on which to bind the profile server (disabled if blank)")
+	flag.Parse()
+
+	if profilePort != "" {
+		go func() {
+			log.Println(
+				http.ListenAndServe(net.JoinHostPort("", profilePort), nil),
+			)
+		}()
+	}
+
+	addr := net.JoinHostPort("", port)
 
 	var err error
 	lc := net.ListenConfig{
