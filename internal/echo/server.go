@@ -9,6 +9,7 @@ import (
 	"github.com/danmrichards/udpecho/internal/sock"
 )
 
+// Server represents an echo server.
 type Server struct {
 	sessions map[int]string
 	conn     net.PacketConn
@@ -17,6 +18,7 @@ type Server struct {
 	buf      []byte
 }
 
+// NewServer returns a new echo server.
 func NewServer(pc net.PacketConn, p *epoll.Poller) (*Server, error) {
 	cs, err := sock.Addr(pc.LocalAddr().String())
 	if err != nil {
@@ -32,6 +34,12 @@ func NewServer(pc net.PacketConn, p *epoll.Poller) (*Server, error) {
 	}, nil
 }
 
+// HandleEvent is an epoll.EventFn that handles events for echoing packets.
+//
+// The handler will determine if the event is for a client that has an existing
+// session or not.
+//
+// A new socket and file descriptor is created for each new client session.
 func (s *Server) HandleEvent(fd int) error {
 	// Check if we have a session for this client.
 	if _, ok := s.sessions[fd]; !ok {
@@ -40,27 +48,9 @@ func (s *Server) HandleEvent(fd int) error {
 			return fmt.Errorf("read: %w", err)
 		}
 
-		// Client socket address.
-		csa, err := sock.Addr(a.String())
+		cfd, err := sock.ConnectClient(s.connsock, a.String())
 		if err != nil {
-			return fmt.Errorf("client sock address: %w", err)
-		}
-
-		// Client socket.
-		cfd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM, syscall.IPPROTO_UDP)
-		if err != nil {
-			return fmt.Errorf("new udp client socket: %w", err)
-		}
-		if err = syscall.SetsockoptInt(cfd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
-			return fmt.Errorf("client socket reuse: %w", err)
-		}
-
-		if err := syscall.Bind(cfd, s.connsock); err != nil {
-			return fmt.Errorf("client socket bind: %w", err)
-		}
-
-		if err := syscall.Connect(cfd, csa); err != nil {
-			return fmt.Errorf("client socket connect: %w", err)
+			return err
 		}
 
 		// Start epoll watching new socket.
