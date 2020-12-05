@@ -54,6 +54,7 @@ func ConnectClient(sa unix.Sockaddr, client string) (int, error) {
 	// as it's created. Only once the Bind and Connect are complete do we drop the
 	// filter.
 	//
+	// See: https://github.com/cloudflare/cloudflare-blog/blob/master/2018-07-dropping-packets/bpf-drop.c
 	// See: https://www.kernel.org/doc/Documentation/networking/filter.txt
 	fprog := &unix.SockFprog{
 		Len: 1,
