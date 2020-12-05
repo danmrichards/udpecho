@@ -6,7 +6,8 @@ import (
 	"log"
 	"net"
 	"os"
-	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -19,21 +20,37 @@ type EventFn func(fd int) error
 // Poller leverages epoll to handle packet connections.
 type Poller struct {
 	fd     int
-	events []syscall.EpollEvent
+	evFD   int
+	events []unix.EpollEvent
 	ef     EventFn
 }
 
 // NewPoller returns a new poller.
 func NewPoller() (*Poller, error) {
-	fd, err := syscall.EpollCreate1(0)
+	fd, err := unix.EpollCreate1(0)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Poller{
+	p := &Poller{
 		fd:     fd,
-		events: make([]syscall.EpollEvent, MaxEpollEvents),
-	}, nil
+		events: make([]unix.EpollEvent, MaxEpollEvents),
+	}
+
+	// Set finalizer for write end of socket pair to avoid data races when
+	// closing Epoll instance and EBADF errors on writing ctl bytes from callers.
+	r0, _, errno := unix.Syscall(unix.SYS_EVENTFD2, 0, 0, 0)
+	if errno != 0 {
+		return nil, errno
+	}
+	p.evFD = int(r0)
+	if err = p.Add(p.evFD); err != nil {
+		unix.Close(fd)
+		unix.Close(p.evFD)
+		return nil, err
+	}
+
+	return p, nil
 }
 
 // HandlePacketConn configures the poller to dispatch the given event function
@@ -48,7 +65,7 @@ func (p *Poller) HandlePacketConn(conn net.PacketConn, ef EventFn) (err error) {
 	}
 
 	if err = p.Add(fd); err != nil {
-		syscall.Close(fd)
+		unix.Close(fd)
 		return err
 	}
 
@@ -57,15 +74,15 @@ func (p *Poller) HandlePacketConn(conn net.PacketConn, ef EventFn) (err error) {
 
 // Close closes the poller.
 func (p *Poller) Close() error {
-	return syscall.Close(p.fd)
+	return unix.Close(p.fd)
 }
 
 // Wait waits for events to be triggered by epoll.
 func (p *Poller) Wait() error {
 	for {
-		n, err := syscall.EpollWait(p.fd, p.events, -1)
+		n, err := unix.EpollWait(p.fd, p.events, -1)
 		if err != nil {
-			var serr syscall.Errno
+			var serr unix.Errno
 			if errors.As(err, &serr) && serr.Temporary() {
 				err = nil
 			} else {
@@ -75,23 +92,23 @@ func (p *Poller) Wait() error {
 
 		for i := 0; i < n; i++ {
 			evt := p.events[i]
-			if int(evt.Fd) == p.fd {
+			if int(evt.Fd) == p.evFD {
 				// Connection closed.
 				return nil
 			}
 
-			if evt.Events&syscall.EPOLLIN == 0 {
-				fmt.Println("unhandled", evt.Events)
-				continue
-			}
-
 			// TODO(dr): Other events? Disconnect?
-
-			if p.ef == nil {
-				continue
-			}
-			if err = p.ef(int(evt.Fd)); err != nil {
-				log.Println(err)
+			switch {
+			case evt.Events&unix.EPOLLERR != 0:
+				return fmt.Errorf("error: %+v", evt)
+			case evt.Events&unix.EPOLLOUT != 0:
+			case evt.Events&unix.EPOLLIN != 0:
+				if p.ef == nil {
+					continue
+				}
+				if err = p.ef(int(evt.Fd)); err != nil {
+					log.Println("ef error:", err)
+				}
 			}
 		}
 	}
@@ -99,8 +116,8 @@ func (p *Poller) Wait() error {
 
 // Add adds a new file descriptor to the list watched by epoll.
 func (p *Poller) Add(fd int) error {
-	return syscall.EpollCtl(p.fd, syscall.EPOLL_CTL_ADD, fd, &syscall.EpollEvent{
-		Events: syscall.EPOLLIN,
+	return unix.EpollCtl(p.fd, unix.EPOLL_CTL_ADD, fd, &unix.EpollEvent{
+		Events: unix.EPOLLIN | unix.EPOLLRDHUP,
 		Fd:     int32(fd),
 	})
 }

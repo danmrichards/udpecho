@@ -3,17 +3,18 @@ package echo
 import (
 	"fmt"
 	"net"
-	"syscall"
 
 	"github.com/danmrichards/udpecho/internal/epoll"
 	"github.com/danmrichards/udpecho/internal/sock"
+
+	"golang.org/x/sys/unix"
 )
 
 // Server represents an echo server.
 type Server struct {
 	sessions map[int]string
 	conn     net.PacketConn
-	connsock syscall.Sockaddr
+	connsock unix.Sockaddr
 	poller   *epoll.Poller
 	buf      []byte
 }
@@ -37,7 +38,7 @@ func NewServer(pc net.PacketConn, p *epoll.Poller) (*Server, error) {
 // Close closes the server and all open sessions.
 func (s *Server) Close() {
 	for sfd := range s.sessions {
-		syscall.Close(sfd)
+		unix.Close(sfd)
 	}
 }
 
@@ -59,31 +60,28 @@ func (s *Server) HandleEvent(fd int) error {
 		if err != nil {
 			return err
 		}
+		s.sessions[cfd] = a.String()
 
 		// Start epoll watching new socket.
 		if err = s.poller.Add(cfd); err != nil {
-			syscall.Close(cfd)
+			unix.Close(cfd)
 			return err
 		}
-
-		s.sessions[cfd] = a.String()
 
 		return s.echo(cfd, s.buf[:n])
 	}
 
-	return s.echo(fd, nil)
+	// Session already exists, read direct from the socket.
+	n, err := unix.Read(fd, s.buf)
+	if err != nil {
+		return fmt.Errorf("read fd: %d: %w", fd, err)
+	}
+
+	return s.echo(fd, s.buf[:n])
 }
 
 func (s *Server) echo(cfd int, data []byte) error {
-	if data == nil {
-		n, err := syscall.Read(cfd, s.buf)
-		if err != nil {
-			return fmt.Errorf("read: %w", err)
-		}
-		data = s.buf[:n]
-	}
-
-	if _, err := syscall.Write(cfd, data); err != nil {
+	if _, err := unix.Write(cfd, data); err != nil {
 		return fmt.Errorf("write: %w", err)
 	}
 
