@@ -49,39 +49,16 @@ func (s *Server) Close() {
 //
 // A new socket and file descriptor is created for each new client session.
 func (s *Server) HandleEvent(fd int) error {
-	// Check if we have a session for this client.
-	if _, ok := s.sessions[fd]; !ok {
-		n, a, err := s.conn.ReadFrom(s.buf)
-		if err != nil {
-			return fmt.Errorf("read: %w", err)
-		}
-
-		cfd, err := sock.ConnectClient(s.connsock, a.String())
-		if err != nil {
-			return err
-		}
-		s.sessions[cfd] = a.String()
-
-		// Start epoll watching new socket.
-		if err = s.poller.Add(cfd); err != nil {
-			unix.Close(cfd)
-			return err
-		}
-
-		return s.echo(cfd, s.buf[:n])
-	}
-
-	// Session already exists, read direct from the socket.
-	n, err := unix.Read(fd, s.buf)
+	n, a, err := unix.Recvfrom(fd, s.buf, 0)
 	if err != nil {
-		return fmt.Errorf("read fd: %d: %w", fd, err)
+		return fmt.Errorf("read: %w", err)
 	}
 
-	return s.echo(fd, s.buf[:n])
+	return s.echo(fd, s.buf[:n], a)
 }
 
-func (s *Server) echo(cfd int, data []byte) error {
-	if _, err := unix.Write(cfd, data); err != nil {
+func (s *Server) echo(fd int, data []byte, a unix.Sockaddr) error {
+	if err := unix.Sendto(fd, data, 0, a); err != nil {
 		return fmt.Errorf("write: %w", err)
 	}
 
